@@ -11,9 +11,9 @@ const navData = [
   {
     title: 'Screeners',
     items: [
-      { name: 'Strong Uptrend', href: '/screeners/strong-uptrend' },
-      { name: 'Uptrend', href: '/screeners/uptrend' },
-      { name: 'Downtrend', href: '/screeners/downtrend' },
+      { name: 'Strong Uptrend', href: '/manage/screeners/strong-uptrend' },
+      { name: 'Uptrend', href: '/manage/screeners/uptrend' },
+      { name: 'Downtrend', href: '/manage/screeners/downtrend' },
     ],
   },
   {

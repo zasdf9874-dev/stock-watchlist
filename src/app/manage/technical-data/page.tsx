@@ -2,6 +2,14 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { createClient } from '../../../lib/supabase/client';
+import { getHistoricalData } from '../../../actions/upstox';
+import {
+  calculateEMA,
+  calculateRSI,
+  calculateMACD,
+  calculateSupertrend,
+  Candle,
+} from '../../../lib/indicators';
 
 interface Stock {
   id: string;
@@ -11,7 +19,6 @@ interface Stock {
   created_at: string;
 }
 
-// Interface matching your prototype columns
 interface StockTechnicalData extends Stock {
   price: number;
   sinceWatchlisted: {
@@ -27,60 +34,108 @@ interface StockTechnicalData extends Stock {
   stUpperBand: number | null;
   stLowerBand: number | null;
   rsi: number;
+  error?: string;
 }
 
 export default function TechnicalDataPage() {
   const supabase = createClient();
   const [techData, setTechData] = useState<StockTechnicalData[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadingStatus, setLoadingStatus] = useState<string>('Initializing...');
 
-  // Helper to generate realistic technical data for prototype display
-  const calculateIndicators = (stock: Stock): StockTechnicalData => {
-    // Generate deterministic baseline prices based on stock symbol length
-    const basePrice = (stock.symbol.charCodeAt(0) * 8.5) + (stock.symbol.length * 15);
-    const price = Math.round(basePrice * 100) / 100;
-    
-    // Simulate days since watchlisted
-    const createdDate = new Date(stock.created_at);
-    const diffDays = Math.max(1, Math.floor((new Date().getTime() - createdDate.getTime()) / (1000 * 3600 * 24)));
-    const changePct = Math.round(((stock.symbol.length % 2 === 0 ? 1 : -1) * (diffDays * 1.2)) * 10) / 10;
-
-    return {
-      ...stock,
-      price: price,
-      sinceWatchlisted: {
-        changePct: changePct,
-        days: diffDays,
-      },
-      ema5: Math.round((price * 1.015) * 100) / 100,
-      ema8: Math.round((price * 1.022) * 100) / 100,
-      ema13: Math.round((price * 1.028) * 100) / 100,
-      ema21: Math.round((price * 1.035) * 100) / 100,
-      macd: Math.round((price * 0.008 * (changePct >= 0 ? 1 : -1)) * 100) / 100,
-      macdSignal: Math.round((price * 0.005 * (changePct >= 0 ? 1 : -1)) * 100) / 100,
-      stUpperBand: changePct < 0 ? Math.round((price * 1.05) * 100) / 100 : null,
-      stLowerBand: changePct >= 0 ? Math.round((price * 0.95) * 100) / 100 : null,
-      rsi: Math.round((45 + (changePct * 2)) * 100) / 100,
-    };
-  };
-
-  const fetchStockData = useCallback(async () => {
+  const fetchAndCalculateStockData = useCallback(async () => {
     setLoading(true);
-    const { data, error } = await supabase
+    setLoadingStatus('Fetching saved stocks from database...');
+
+    const { data: stocks, error: dbError } = await supabase
       .from('stocks')
       .select('*')
       .order('created_at', { ascending: false });
 
-    if (!error && data) {
-      const computed = data.map((stock) => calculateIndicators(stock));
-      setTechData(computed);
+    if (dbError || !stocks || stocks.length === 0) {
+      setTechData([]);
+      setLoading(false);
+      return;
     }
+
+    const computedResults: StockTechnicalData[] = [];
+
+    for (let i = 0; i < stocks.length; i++) {
+      const stock = stocks[i];
+      setLoadingStatus(`Fetching Upstox data for ${stock.symbol} (${i + 1}/${stocks.length})...`);
+
+      const res = await getHistoricalData(stock.symbol);
+
+      if (!res.success || !res.candles || res.candles.length === 0) {
+        computedResults.push({
+          ...stock,
+          price: 0,
+          sinceWatchlisted: { changePct: 0, days: 0 },
+          ema5: 0,
+          ema8: 0,
+          ema13: 0,
+          ema21: 0,
+          macd: 0,
+          macdSignal: 0,
+          stUpperBand: null,
+          stLowerBand: null,
+          rsi: 0,
+          error: res.error || 'Failed to load candle data',
+        });
+        continue;
+      }
+
+      const candles: Candle[] = res.candles;
+      const closePrices = candles.map((c) => c.close);
+      const currentPrice = res.currentPrice || closePrices[closePrices.length - 1];
+
+      // Days since added
+      const createdDate = new Date(stock.created_at);
+      const diffDays = Math.max(
+        1,
+        Math.floor((new Date().getTime() - createdDate.getTime()) / (1000 * 3600 * 24))
+      );
+
+      // Compare current price to starting baseline (first candle in 100-day window or baseline price)
+      const initialPrice = candles[0].close;
+      const changePct =
+        Math.round(((currentPrice - initialPrice) / initialPrice) * 100 * 10) / 10;
+
+      // Indicator calculations using our indicators math module
+      const ema5 = calculateEMA(closePrices, 5);
+      const ema8 = calculateEMA(closePrices, 8);
+      const ema13 = calculateEMA(closePrices, 13);
+      const ema21 = calculateEMA(closePrices, 21);
+      const rsi = calculateRSI(closePrices, 14);
+      const macdObj = calculateMACD(closePrices);
+      const supertrendObj = calculateSupertrend(candles, 10, 3);
+
+      computedResults.push({
+        ...stock,
+        price: currentPrice,
+        sinceWatchlisted: {
+          changePct: changePct,
+          days: diffDays,
+        },
+        ema5: ema5,
+        ema8: ema8,
+        ema13: ema13,
+        ema21: ema21,
+        macd: macdObj.macd,
+        macdSignal: macdObj.signal,
+        stUpperBand: supertrendObj.stUpperBand,
+        stLowerBand: supertrendObj.stLowerBand,
+        rsi: rsi,
+      });
+    }
+
+    setTechData(computedResults);
     setLoading(false);
   }, [supabase]);
 
   useEffect(() => {
-    fetchStockData();
-  }, [fetchStockData]);
+    fetchAndCalculateStockData();
+  }, [fetchAndCalculateStockData]);
 
   return (
     <div className="p-4 sm:p-8 max-w-[1600px] mx-auto space-y-6">
@@ -88,25 +143,27 @@ export default function TechnicalDataPage() {
         <div>
           <h1 className="text-2xl font-bold text-slate-100">Technical Indicators Overview</h1>
           <p className="text-sm text-slate-400 mt-1">
-            Calculated multi-moving averages, MACD, Supertrend bands, and RSI for watchlisted stocks.
+            Real-time Upstox daily candle calculations for EMAs, MACD, Supertrend, and RSI.
           </p>
         </div>
-        <button 
-          onClick={fetchStockData}
-          className="text-xs bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 px-3 py-2 rounded-lg transition-colors flex items-center gap-1.5"
+        <button
+          onClick={fetchAndCalculateStockData}
+          disabled={loading}
+          className="text-xs bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-200 border border-slate-700 px-3 py-2 rounded-lg transition-colors flex items-center gap-1.5"
         >
           <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
           </svg>
-          Recalculate
+          {loading ? 'Refreshing...' : 'Recalculate'}
         </button>
       </div>
 
       {/* Main Table Container */}
       <div className="bg-slate-900 border border-slate-800 rounded-xl shadow-sm overflow-hidden">
         {loading ? (
-          <div className="p-12 text-center text-slate-500 text-sm">
-            Fetching technical indicators...
+          <div className="p-12 text-center text-slate-400 text-sm space-y-2">
+            <div className="inline-block animate-spin rounded-full h-6 w-6 border-2 border-blue-500 border-t-transparent"></div>
+            <div>{loadingStatus}</div>
           </div>
         ) : techData.length === 0 ? (
           <div className="p-12 text-center text-slate-500 text-sm">
@@ -133,6 +190,20 @@ export default function TechnicalDataPage() {
               </thead>
               <tbody className="divide-y divide-slate-800/60 font-mono text-slate-300">
                 {techData.map((item) => {
+                  if (item.error) {
+                    return (
+                      <tr key={item.id} className="hover:bg-slate-800/40 transition-colors">
+                        <td className="px-4 py-3 font-semibold text-slate-200 sticky left-0 bg-slate-900 font-sans">
+                          <div>{item.company_name || item.symbol}</div>
+                          <div className="text-[10px] text-slate-500 font-mono">{item.symbol}</div>
+                        </td>
+                        <td colSpan={11} className="px-4 py-3 text-rose-400 italic text-xs">
+                          Upstox Error: {item.error}
+                        </td>
+                      </tr>
+                    );
+                  }
+
                   const isUp = item.sinceWatchlisted.changePct >= 0;
                   return (
                     <tr key={item.id} className="hover:bg-slate-800/40 transition-colors">

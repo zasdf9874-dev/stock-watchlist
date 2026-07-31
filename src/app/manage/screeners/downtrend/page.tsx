@@ -1,5 +1,6 @@
 'use client';
 
+import { useStore } from '../../../../store/useStore';
 import { useState, useEffect, useCallback } from 'react';
 import { createClient } from '../../../../lib/supabase/client';
 import { getScreenerData } from '../../../../actions/upstox';
@@ -18,7 +19,8 @@ interface ScreenerResult {
 
 export default function DowntrendScreenerPage() {
   const supabase = createClient();
-  const [results, setResults] = useState<ScreenerResult[]>([]);
+  const results = useStore((state) => state.downtrendResults);
+  const setResults = useStore((state) => state.setDowntrendResults);
   const [loading, setLoading] = useState(true);
   const [status, setStatus] = useState('Initializing...');
 
@@ -26,11 +28,42 @@ export default function DowntrendScreenerPage() {
     setLoading(true);
     setStatus('Fetching watchlist...');
 
-    // 1. Get watchlisted stocks from Supabase
-    const { data: stocks, error: dbError } = await supabase
+    // 1. Get current user
+    const { data: { user } } = await supabase.auth.getUser();
+
+    // 2. Fetch user's portfolio symbols to exclude them
+    let excludedSymbols = new Set<string>();
+    if (user) {
+      const { data: portData } = await supabase
+        .from('portfolios')
+        .select('symbol')
+        .eq('user_id', user.id);
+      
+      if (portData) {
+        excludedSymbols = new Set(portData.map(p => p.symbol));
+      }
+    }
+
+    // 3. Fetch watchlist stocks
+    const { data: allStocks, error: dbError } = await supabase
       .from('stocks')
       .select('*')
       .order('created_at', { ascending: false });
+
+    if (dbError || !allStocks) {
+      setResults([]);
+      setLoading(false);
+      return;
+    }
+
+    // Filter out stocks already in portfolio
+    const stocks = allStocks.filter(s => !excludedSymbols.has(s.symbol));
+
+    if (stocks.length === 0) {
+      setResults([]);
+      setLoading(false);
+      return;
+    }
 
     if (dbError || !stocks || stocks.length === 0) {
       setResults([]);
@@ -41,60 +74,57 @@ export default function DowntrendScreenerPage() {
     const computedResults: ScreenerResult[] = [];
 
     // 2. Fetch multi-timeframe data and evaluate rules
-    for (let i = 0; i < stocks.length; i++) {
-      const stock = stocks[i];
-      setStatus(`Evaluating ${stock.symbol} (${i + 1}/${stocks.length})...`);
+    // BATCH LOOP FOR DOWNTREND
+    const BATCH_SIZE = 5;
 
-      const res = await getScreenerData(stock.symbol);
+    for (let i = 0; i < stocks.length; i += BATCH_SIZE) {
+      const batch = stocks.slice(i, i + BATCH_SIZE);
+      setStatus(`Evaluating ${i + 1} to ${Math.min(i + BATCH_SIZE, stocks.length)} of ${stocks.length}...`);
 
-      if (!res.success || !res.timeframes) {
-        computedResults.push({
-          id: stock.id,
-          symbol: stock.symbol,
-          company_name: stock.company_name,
-          price: 0,
-          daily: evaluateDowntrend([]),
-          weekly: evaluateDowntrend([]),
-          monthly: evaluateDowntrend([]),
-          error: res.error || 'Failed to fetch data',
-        });
-        continue;
-      }
+      const batchPromises = batch.map(stock => getScreenerData(stock.symbol));
+      const batchResponses = await Promise.all(batchPromises);
 
-      const { daily, weekly, monthly } = res.timeframes;
-      const currentPrice = daily.length > 0 ? daily[daily.length - 1].close : 0;
+      batchResponses.forEach((res, index) => {
+        const stock = batch[index];
 
-     // SYNTHETIC CANDLE INJECTION: 
-      // Force the current Weekly and Monthly closing price to match the latest Daily price
-      // so indicators react to today's EOD price instead of waiting for the week/month to close.
-      if (weekly.length > 0) weekly[weekly.length - 1].close = currentPrice;
-      if (monthly.length > 0) monthly[monthly.length - 1].close = currentPrice;
+        if (res.success && res.timeframes) {
+          const { daily, weekly, monthly } = res.timeframes;
+          const currentPrice = daily.length > 0 ? daily[daily.length - 1].close : 0;
 
-      const dailyEval = evaluateDowntrend(daily);
-      const weeklyEval = evaluateDowntrend(weekly);
-      const monthlyEval = evaluateDowntrend(monthly);
+          if (weekly.length > 0) weekly[weekly.length - 1].close = currentPrice;
+          if (monthly.length > 0) monthly[monthly.length - 1].close = currentPrice;
 
-      // Only add to screener if it is in a Downtrend on Daily AND Weekly AND Monthly timeframes
-      if (dailyEval.isDowntrend && weeklyEval.isDowntrend && monthlyEval.isDowntrend) {
-        computedResults.push({
-          id: stock.id,
-          symbol: stock.symbol,
-          company_name: stock.company_name,
-          price: currentPrice,
-          daily: dailyEval,
-          weekly: weeklyEval,
-          monthly: monthlyEval,
-        });
-      }
+          const dailyEval = evaluateDowntrend(daily);
+          const weeklyEval = evaluateDowntrend(weekly);
+          const monthlyEval = evaluateDowntrend(monthly);
+
+          // DOWNTREND RULE: All 3 timeframes must have 3+ Bearish indicators
+          if (dailyEval.isDowntrend && weeklyEval.isDowntrend && monthlyEval.isDowntrend) {
+            computedResults.push({
+              id: stock.id,
+              symbol: stock.symbol,
+              company_name: stock.company_name,
+              price: currentPrice,
+              daily: dailyEval,
+              weekly: weeklyEval,
+              monthly: monthlyEval,
+            });
+          }
+        }
+      });
     }
 
     setResults(computedResults);
     setLoading(false);
   }, [supabase]);
 
-  useEffect(() => {
-    runScreener();
-  }, [runScreener]);
+ useEffect(() => {
+    if (results.length === 0) {
+      runScreener();
+    } else {
+      setLoading(false);
+    }
+  }, [runScreener, results.length]);
 
   // Helper component to render the Red/Green badges
   const Badge = ({ value }: { value: 'Bearish' | 'Bullish' }) => {

@@ -1,5 +1,6 @@
 'use client';
 
+import { useStore } from '../../../store/useStore';
 import { useState, useEffect, useCallback } from 'react';
 import { createClient } from '../../../lib/supabase/client';
 import { getHistoricalData } from '../../../actions/upstox';
@@ -39,7 +40,8 @@ interface StockTechnicalData extends Stock {
 
 export default function TechnicalDataPage() {
   const supabase = createClient();
-  const [techData, setTechData] = useState<StockTechnicalData[]>([]);
+  const techData = useStore((state) => state.technicalResults);
+  const setTechData = useStore((state) => state.setTechnicalResults);
   const [loading, setLoading] = useState(true);
   const [loadingStatus, setLoadingStatus] = useState<string>('Initializing...');
 
@@ -60,72 +62,80 @@ export default function TechnicalDataPage() {
 
     const computedResults: StockTechnicalData[] = [];
 
-    for (let i = 0; i < stocks.length; i++) {
-      const stock = stocks[i];
-      setLoadingStatus(`Fetching Upstox data for ${stock.symbol} (${i + 1}/${stocks.length})...`);
+    // BATCH LOOP FOR TECHNICAL DATA
+    const BATCH_SIZE = 5;
 
-      const res = await getHistoricalData(stock.symbol);
+    for (let i = 0; i < stocks.length; i += BATCH_SIZE) {
+      const batch = stocks.slice(i, i + BATCH_SIZE);
+      setLoadingStatus(`Fetching Upstox data for ${i + 1} to ${Math.min(i + BATCH_SIZE, stocks.length)} of ${stocks.length}...`);
 
-      if (!res.success || !res.candles || res.candles.length === 0) {
+      const batchPromises = batch.map(stock => getHistoricalData(stock.symbol));
+      const batchResponses = await Promise.all(batchPromises);
+
+      batchResponses.forEach((res, index) => {
+        const stock = batch[index];
+
+        if (!res.success || !res.candles || res.candles.length === 0) {
+          computedResults.push({
+            ...stock,
+            price: 0,
+            sinceWatchlisted: { changePct: 0, days: 0 },
+            ema5: 0,
+            ema8: 0,
+            ema13: 0,
+            ema21: 0,
+            macd: 0,
+            macdSignal: 0,
+            stUpperBand: null,
+            stLowerBand: null,
+            rsi: 0,
+            error: res.error || 'Failed to load candle data',
+          });
+          return; // Note: 'return' is used instead of 'continue' inside a forEach loop
+        }
+
+        const candles = res.candles;
+        const closePrices = candles.map((c: any) => c.close);
+        const currentPrice = res.currentPrice || closePrices[closePrices.length - 1];
+
+        // Days since added
+        const createdDate = new Date(stock.created_at);
+        const diffDays = Math.max(
+          1,
+          Math.floor((new Date().getTime() - createdDate.getTime()) / (1000 * 3600 * 24))
+        );
+
+        // Compare current price to starting baseline (first candle in 100-day window or baseline price)
+        const initialPrice = candles[0].close;
+        const changePct =
+          Math.round(((currentPrice - initialPrice) / initialPrice) * 100 * 10) / 10;
+
+        // Indicator calculations using our indicators math module
+        const ema5 = calculateEMA(closePrices, 5);
+        const ema8 = calculateEMA(closePrices, 8);
+        const ema13 = calculateEMA(closePrices, 13);
+        const ema21 = calculateEMA(closePrices, 21);
+        const rsi = calculateRSI(closePrices, 14);
+        const macdObj = calculateMACD(closePrices);
+        const supertrendObj = calculateSupertrend(candles, 10, 3);
+
         computedResults.push({
           ...stock,
-          price: 0,
-          sinceWatchlisted: { changePct: 0, days: 0 },
-          ema5: 0,
-          ema8: 0,
-          ema13: 0,
-          ema21: 0,
-          macd: 0,
-          macdSignal: 0,
-          stUpperBand: null,
-          stLowerBand: null,
-          rsi: 0,
-          error: res.error || 'Failed to load candle data',
+          price: currentPrice,
+          sinceWatchlisted: {
+            changePct: changePct,
+            days: diffDays,
+          },
+          ema5: ema5,
+          ema8: ema8,
+          ema13: ema13,
+          ema21: ema21,
+          macd: macdObj.macd,
+          macdSignal: macdObj.signal,
+          stUpperBand: supertrendObj.stUpperBand,
+          stLowerBand: supertrendObj.stLowerBand,
+          rsi: rsi,
         });
-        continue;
-      }
-
-      const candles: Candle[] = res.candles;
-      const closePrices = candles.map((c) => c.close);
-      const currentPrice = res.currentPrice || closePrices[closePrices.length - 1];
-
-      // Days since added
-      const createdDate = new Date(stock.created_at);
-      const diffDays = Math.max(
-        1,
-        Math.floor((new Date().getTime() - createdDate.getTime()) / (1000 * 3600 * 24))
-      );
-
-      // Compare current price to starting baseline (first candle in 100-day window or baseline price)
-      const initialPrice = candles[0].close;
-      const changePct =
-        Math.round(((currentPrice - initialPrice) / initialPrice) * 100 * 10) / 10;
-
-      // Indicator calculations using our indicators math module
-      const ema5 = calculateEMA(closePrices, 5);
-      const ema8 = calculateEMA(closePrices, 8);
-      const ema13 = calculateEMA(closePrices, 13);
-      const ema21 = calculateEMA(closePrices, 21);
-      const rsi = calculateRSI(closePrices, 14);
-      const macdObj = calculateMACD(closePrices);
-      const supertrendObj = calculateSupertrend(candles, 10, 3);
-
-      computedResults.push({
-        ...stock,
-        price: currentPrice,
-        sinceWatchlisted: {
-          changePct: changePct,
-          days: diffDays,
-        },
-        ema5: ema5,
-        ema8: ema8,
-        ema13: ema13,
-        ema21: ema21,
-        macd: macdObj.macd,
-        macdSignal: macdObj.signal,
-        stUpperBand: supertrendObj.stUpperBand,
-        stLowerBand: supertrendObj.stLowerBand,
-        rsi: rsi,
       });
     }
 
@@ -134,8 +144,12 @@ export default function TechnicalDataPage() {
   }, [supabase]);
 
   useEffect(() => {
-    fetchAndCalculateStockData();
-  }, [fetchAndCalculateStockData]);
+    if (techData.length === 0) {
+      fetchAndCalculateStockData();
+    } else {
+      setLoading(false);
+    }
+  }, [fetchAndCalculateStockData, techData.length]);
 
   return (
     <div className="p-4 sm:p-8 max-w-[1600px] mx-auto space-y-6">

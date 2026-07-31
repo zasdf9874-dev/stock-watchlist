@@ -1,27 +1,26 @@
 'use client';
 
-import { useStore } from '../../../../store/useStore';
 import { useState, useEffect, useCallback } from 'react';
 import { createClient } from '../../../../lib/supabase/client';
 import { getScreenerData } from '../../../../actions/upstox';
-import { evaluateUptrend, get52WeekHigh } from '../../../../lib/screener-logic';
+import { evaluateUptrend, evaluateLookbackReversal } from '../../../../lib/screener-logic';
+import { useStore } from '../../../../store/useStore';
 
 interface ScreenerResult {
   id: string;
   symbol: string;
   company_name: string;
   price: number;
-  fiftyTwoWeekHigh: number;
+  reversalType: string;
   daily: any;
   weekly: any;
   monthly: any;
-  error?: string;
 }
 
-export default function StrongUptrendScreenerPage() {
+export default function StockBuyScreenerPage() {
   const supabase = createClient();
-  const results = useStore((state) => state.strongUptrendResults);
-  const setResults = useStore((state) => state.setStrongUptrendResults);
+  const results = useStore((state) => state.stockBuyResults);
+  const setResults = useStore((state) => state.setStockBuyResults);
   const [loading, setLoading] = useState(true);
   const [status, setStatus] = useState('Initializing...');
 
@@ -45,7 +44,7 @@ export default function StrongUptrendScreenerPage() {
       }
     }
 
-    // 3. Fetch watchlist stocks
+    // 3. Fetch stocks from watchlist
     const { data: allStocks, error: dbError } = await supabase
       .from('stocks')
       .select('*')
@@ -57,7 +56,7 @@ export default function StrongUptrendScreenerPage() {
       return;
     }
 
-    // Filter out stocks already in portfolio
+    // Filter out stocks that are already in the portfolio
     const stocks = allStocks.filter(s => !excludedSymbols.has(s.symbol));
 
     if (stocks.length === 0) {
@@ -73,8 +72,6 @@ export default function StrongUptrendScreenerPage() {
     }
 
     const computedResults: ScreenerResult[] = [];
-
-    // BATCH LOOP FOR STRONG UPTREND
     const BATCH_SIZE = 5;
 
     for (let i = 0; i < stocks.length; i += BATCH_SIZE) {
@@ -98,19 +95,18 @@ export default function StrongUptrendScreenerPage() {
           const weeklyEval = evaluateUptrend(weekly);
           const monthlyEval = evaluateUptrend(monthly);
           
-          const fiftyTwoWeekHigh = get52WeekHigh(weekly);
+          const reversalData = evaluateLookbackReversal(monthly);
 
-          // STRONG UPTREND RULES: Monthly has 2+ Bullish AND Price > 52W High
-          const isMonthlyStrong = monthlyEval.bullishCount >= 2;
-          const isBreakout = currentPrice > fiftyTwoWeekHigh;
+          const isMonthlyBullish = monthlyEval.bullishCount >= 2;
+          const isFreshReversal = reversalData.isReversal;
 
-          if (isMonthlyStrong && isBreakout) {
+          if (isMonthlyBullish && isFreshReversal) {
             computedResults.push({
               id: stock.id,
               symbol: stock.symbol,
               company_name: stock.company_name,
               price: currentPrice,
-              fiftyTwoWeekHigh,
+              reversalType: reversalData.reversalType,
               daily: dailyEval,
               weekly: weeklyEval,
               monthly: monthlyEval,
@@ -122,9 +118,9 @@ export default function StrongUptrendScreenerPage() {
 
     setResults(computedResults);
     setLoading(false);
-  }, [supabase]);
+  }, [supabase, setResults]);
 
-useEffect(() => {
+  useEffect(() => {
     if (results.length === 0) {
       runScreener();
     } else {
@@ -149,9 +145,9 @@ useEffect(() => {
     <div className="p-4 sm:p-8 max-w-[1600px] mx-auto space-y-6">
       <div className="flex justify-between items-center">
         <div>
-          <h1 className="text-2xl font-bold text-slate-100">Strong Uptrend Stocks</h1>
+          <h1 className="text-2xl font-bold text-slate-100">Stock Buy Candidates</h1>
           <p className="text-sm text-slate-400 mt-1">
-            Stocks trading above their 52-Week High with at least 2 Bullish indicators on the Monthly timeframe.
+            Stocks with 2+ Monthly Bullish indicators AND a fresh 3-month reversal on EMA, MACD, or Supertrend.
           </p>
         </div>
         <button
@@ -171,7 +167,7 @@ useEffect(() => {
           </div>
         ) : results.length === 0 ? (
           <div className="p-12 text-center text-slate-500 text-sm">
-            No stocks are currently in a strong uptrend breaking 52-week highs.
+            No stocks are currently showing a fresh monthly reversal.
           </div>
         ) : (
           <div className="overflow-x-auto">
@@ -186,21 +182,18 @@ useEffect(() => {
                 <tr className="border-b border-slate-800 text-[10px] uppercase text-slate-500">
                   <th className="px-4 py-2 text-left sticky left-0 bg-slate-950 z-10 w-48">Stock</th>
                   <th className="px-4 py-2 text-right">Price (₹)</th>
-                  <th className="px-4 py-2 text-right border-r border-slate-800">52W High (₹)</th>
+                  <th className="px-4 py-2 text-center border-r border-slate-800">Reversal Trigger</th>
                   
-                  {/* Daily */}
                   <th className="px-2 py-2">EMA</th>
                   <th className="px-2 py-2">MACD</th>
                   <th className="px-2 py-2">ST</th>
                   <th className="px-2 py-2 border-r border-slate-800">RSI</th>
 
-                  {/* Weekly */}
                   <th className="px-2 py-2">EMA</th>
                   <th className="px-2 py-2">MACD</th>
                   <th className="px-2 py-2">ST</th>
                   <th className="px-2 py-2 border-r border-slate-800">RSI</th>
 
-                  {/* Monthly */}
                   <th className="px-2 py-2">EMA</th>
                   <th className="px-2 py-2">MACD</th>
                   <th className="px-2 py-2">ST</th>
@@ -218,8 +211,10 @@ useEffect(() => {
                     <td className="px-4 py-3 text-right font-mono font-medium text-emerald-400">
                       {item.price.toFixed(2)}
                     </td>
-                    <td className="px-4 py-3 text-right font-mono font-medium text-slate-400 border-r border-slate-800">
-                      {item.fiftyTwoWeekHigh.toFixed(2)}
+                    <td className="px-4 py-3 text-center border-r border-slate-800">
+                      <span className="bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 px-2 py-1 rounded text-[10px] font-bold uppercase tracking-wider">
+                        {item.reversalType}
+                      </span>
                     </td>
 
                     <td className="px-2 py-3"><Badge value={item.daily.ema} /></td>
@@ -235,7 +230,7 @@ useEffect(() => {
                     <td className="px-2 py-3"><Badge value={item.monthly.ema} /></td>
                     <td className="px-2 py-3"><Badge value={item.monthly.macd} /></td>
                     <td className="px-2 py-3"><Badge value={item.monthly.st} /></td>
-                    <td className="px-2 py-3"><Badge value={item.monthly.rsi} /></td>
+                    <td className="px-2 py-3 border-r border-slate-800"><Badge value={item.monthly.rsi} /></td>
                   </tr>
                 ))}
               </tbody>

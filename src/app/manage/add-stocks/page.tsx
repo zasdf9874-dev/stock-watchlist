@@ -20,6 +20,19 @@ export default function AddStocksPage() {
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
 
+  // Autocomplete State
+  const [allStocks, setAllStocks] = useState<{symbol: string, name: string}[]>([]);
+  const [suggestions, setSuggestions] = useState<{symbol: string, name: string}[]>([]);
+  const [isDropdownOpen, setIsDropdownOpen] = useState(false);
+
+  // Load JSON data once when page loads
+  useEffect(() => {
+    fetch('/nse-stocks.json')
+      .then(res => res.json())
+      .then(data => setAllStocks(data))
+      .catch(err => console.error("Could not load stock list", err));
+  }, []);
+
   // Fetch stocks from Supabase
   const fetchStocks = useCallback(async () => {
     const { data, error } = await supabase
@@ -37,6 +50,31 @@ export default function AddStocksPage() {
   useEffect(() => {
     fetchStocks();
   }, [fetchStocks]);
+
+  // Handle Input for Autocomplete
+  const handleSymbolChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const value = e.target.value;
+    setSymbol(value.toUpperCase());
+
+    if (value.length >= 2) {
+      const filtered = allStocks.filter(stock => 
+        stock.symbol.toLowerCase().includes(value.toLowerCase()) || 
+        stock.name.toLowerCase().includes(value.toLowerCase())
+      ).slice(0, 10);
+
+      setSuggestions(filtered);
+      setIsDropdownOpen(true);
+    } else {
+      setIsDropdownOpen(false);
+    }
+  };
+
+  // Handle clicking a stock from the dropdown
+  const handleSelectStock = (selectedSymbol: string, selectedName: string) => {
+    setSymbol(selectedSymbol);
+    setCompanyName(selectedName);
+    setIsDropdownOpen(false);
+  };
 
   // Add stock to Supabase
   const handleAddStock = async (e: React.FormEvent) => {
@@ -102,18 +140,38 @@ export default function AddStocksPage() {
               </div>
             )}
 
-            <div>
+            <div className="relative">
               <label className="block text-xs font-medium text-slate-400 mb-1">
                 Stock Symbol / Ticker *
               </label>
               <input
                 type="text"
-                placeholder="e.g. RELIANCE, TCS, INFY"
+                placeholder="e.g. RELIANCE, TATA"
                 value={symbol}
-                onChange={(e) => setSymbol(e.target.value)}
+                onChange={handleSymbolChange}
+                // Delay hiding dropdown so clicks register
+                onBlur={() => setTimeout(() => setIsDropdownOpen(false), 200)}
                 required
                 className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-slate-200 placeholder-slate-600 focus:outline-none focus:border-blue-500 text-sm uppercase"
               />
+              
+              {/* Autocomplete Dropdown */}
+              {isDropdownOpen && suggestions.length > 0 && (
+                <div className="absolute top-full left-0 right-0 mt-1 bg-slate-800 border border-slate-700 rounded-lg shadow-xl z-50 overflow-hidden">
+                  <ul className="max-h-60 overflow-y-auto divide-y divide-slate-700/50">
+                    {suggestions.map((s) => (
+                      <li 
+                        key={s.symbol}
+                        onClick={() => handleSelectStock(s.symbol, s.name)}
+                        className="px-4 py-3 hover:bg-slate-700/50 cursor-pointer flex justify-between items-center transition-colors"
+                      >
+                        <span className="font-semibold text-slate-200">{s.symbol}</span>
+                        <span className="text-xs text-slate-400 truncate ml-2">{s.name}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
             </div>
 
             <div>

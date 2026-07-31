@@ -4,24 +4,23 @@ import { useStore } from '../../../../store/useStore';
 import { useState, useEffect, useCallback } from 'react';
 import { createClient } from '../../../../lib/supabase/client';
 import { getScreenerData } from '../../../../actions/upstox';
-import { evaluateUptrend, get52WeekHigh } from '../../../../lib/screener-logic';
+import { evaluateUptrend } from '../../../../lib/screener-logic';
 
 interface ScreenerResult {
   id: string;
   symbol: string;
   company_name: string;
   price: number;
-  fiftyTwoWeekHigh: number;
   daily: any;
   weekly: any;
   monthly: any;
   error?: string;
 }
 
-export default function StrongUptrendScreenerPage() {
+export default function UptrendScreenerPage() {
   const supabase = createClient();
-  const results = useStore((state) => state.strongUptrendResults);
-  const setResults = useStore((state) => state.setStrongUptrendResults);
+  const results = useStore((state) => state.uptrendResults);
+  const setResults = useStore((state) => state.setUptrendResults);
   const [loading, setLoading] = useState(true);
   const [status, setStatus] = useState('Initializing...');
 
@@ -74,8 +73,8 @@ export default function StrongUptrendScreenerPage() {
 
     const computedResults: ScreenerResult[] = [];
 
-    // BATCH LOOP FOR STRONG UPTREND
-    const BATCH_SIZE = 5;
+    // PASTE THIS NEW BATCH LOOP
+    const BATCH_SIZE = 5; 
 
     for (let i = 0; i < stocks.length; i += BATCH_SIZE) {
       const batch = stocks.slice(i, i + BATCH_SIZE);
@@ -97,20 +96,16 @@ export default function StrongUptrendScreenerPage() {
           const dailyEval = evaluateUptrend(daily);
           const weeklyEval = evaluateUptrend(weekly);
           const monthlyEval = evaluateUptrend(monthly);
-          
-          const fiftyTwoWeekHigh = get52WeekHigh(weekly);
 
-          // STRONG UPTREND RULES: Monthly has 2+ Bullish AND Price > 52W High
-          const isMonthlyStrong = monthlyEval.bullishCount >= 2;
-          const isBreakout = currentPrice > fiftyTwoWeekHigh;
+          const isDailyOrWeeklyBullish = dailyEval.bullishCount >= 2 || weeklyEval.bullishCount >= 2;
+          const isMonthlyWeak = monthlyEval.bullishCount <= 1;
 
-          if (isMonthlyStrong && isBreakout) {
+          if (isDailyOrWeeklyBullish && isMonthlyWeak) {
             computedResults.push({
               id: stock.id,
               symbol: stock.symbol,
               company_name: stock.company_name,
               price: currentPrice,
-              fiftyTwoWeekHigh,
               daily: dailyEval,
               weekly: weeklyEval,
               monthly: monthlyEval,
@@ -124,10 +119,12 @@ export default function StrongUptrendScreenerPage() {
     setLoading(false);
   }, [supabase]);
 
-useEffect(() => {
+ useEffect(() => {
+    // ONLY run the screener if our memory vault is empty
     if (results.length === 0) {
       runScreener();
     } else {
+      // If we already have data, turn off the loading screen instantly
       setLoading(false);
     }
   }, [runScreener, results.length]);
@@ -149,9 +146,9 @@ useEffect(() => {
     <div className="p-4 sm:p-8 max-w-[1600px] mx-auto space-y-6">
       <div className="flex justify-between items-center">
         <div>
-          <h1 className="text-2xl font-bold text-slate-100">Strong Uptrend Stocks</h1>
+          <h1 className="text-2xl font-bold text-slate-100">Uptrend Stocks</h1>
           <p className="text-sm text-slate-400 mt-1">
-            Stocks trading above their 52-Week High with at least 2 Bullish indicators on the Monthly timeframe.
+            Stocks with at least 2 Bullish indicators on the Weekly timeframe.
           </p>
         </div>
         <button
@@ -171,22 +168,21 @@ useEffect(() => {
           </div>
         ) : results.length === 0 ? (
           <div className="p-12 text-center text-slate-500 text-sm">
-            No stocks are currently in a strong uptrend breaking 52-week highs.
+            No stocks are currently in a weekly uptrend.
           </div>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-center text-xs whitespace-nowrap">
               <thead className="bg-slate-950/80 text-slate-400 border-b border-slate-800 font-semibold tracking-wider">
                 <tr>
-                  <th colSpan={3} className="px-4 py-2 border-r border-slate-800 bg-slate-950 text-left">Stock Details</th>
+                  <th colSpan={2} className="px-4 py-2 border-r border-slate-800 bg-slate-950 text-left">Stock Details</th>
                   <th colSpan={4} className="px-4 py-2 border-r border-slate-800">Daily</th>
                   <th colSpan={4} className="px-4 py-2 border-r border-slate-800">Weekly</th>
                   <th colSpan={4} className="px-4 py-2">Monthly</th>
                 </tr>
                 <tr className="border-b border-slate-800 text-[10px] uppercase text-slate-500">
                   <th className="px-4 py-2 text-left sticky left-0 bg-slate-950 z-10 w-48">Stock</th>
-                  <th className="px-4 py-2 text-right">Price (₹)</th>
-                  <th className="px-4 py-2 text-right border-r border-slate-800">52W High (₹)</th>
+                  <th className="px-4 py-2 text-right border-r border-slate-800">Price (₹)</th>
                   
                   {/* Daily */}
                   <th className="px-2 py-2">EMA</th>
@@ -215,11 +211,8 @@ useEffect(() => {
                         {item.company_name || item.symbol}
                       </div>
                     </td>
-                    <td className="px-4 py-3 text-right font-mono font-medium text-emerald-400">
+                    <td className="px-4 py-3 text-right font-mono font-medium border-r border-slate-800 text-emerald-400">
                       {item.price.toFixed(2)}
-                    </td>
-                    <td className="px-4 py-3 text-right font-mono font-medium text-slate-400 border-r border-slate-800">
-                      {item.fiftyTwoWeekHigh.toFixed(2)}
                     </td>
 
                     <td className="px-2 py-3"><Badge value={item.daily.ema} /></td>

@@ -18,9 +18,9 @@ const navData = [
   },
   {
     title: 'Live Trading',
-    items: [
-      { name: 'Portfolio', href: '/live/portfolio' },
-      { name: 'Stock Buy', href: '/live/buy' },
+        items: [
+          { name: 'Portfolio', href: '/manage/portfolio' },
+          { name: 'Stock Buy', href: '/manage/screeners/stock-buy' },
     ],
   },
   {
